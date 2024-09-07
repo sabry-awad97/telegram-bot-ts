@@ -7,39 +7,27 @@ const TELEGRAM_CHAT_ID = z.coerce.number().parse(process.env.TELEGRAM_CHAT_ID);
 
 const bot = new Bot(TELEGRAM_BOT_TOKEN);
 
-bot.command({
-  name: "start",
-  description: "Start the registration process",
-  prompts: [
-    {
-      key: "name",
-      text: "What's your name?",
-      schema: z.string().min(1, "Name cannot be empty"),
-    },
-    {
-      key: "age",
-      text: "How old are you?",
-      schema: z.coerce.number().int().positive().max(120),
-    },
-    {
-      key: "email",
-      text: "What's your email address?",
-      schema: z.string().email(),
-    },
-  ] as const,
-});
-
-bot.command({
-  name: "status",
-  description: "Update your current status",
-  prompts: [
-    {
-      key: "status",
-      text: "Please enter your current status (Pending, Processing, or Completed):",
-      schema: z.enum(["Pending", "Processing", "Completed"]),
-    },
-  ],
-});
+bot
+  .schema(
+    z.object({
+      name: z.string().min(1, "Name cannot be empty"),
+      age: z.coerce.number().int().positive().max(120),
+    })
+  )
+  .command({
+    name: "start",
+    description: "Start the registration process",
+    prompts: [
+      {
+        key: "name",
+        text: "What's your name?",
+      },
+      {
+        key: "age",
+        text: "How old are you?",
+      },
+    ] as const,
+  });
 
 bot
   .executeCommand("start", TELEGRAM_CHAT_ID)

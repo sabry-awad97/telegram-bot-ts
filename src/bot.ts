@@ -1,115 +1,124 @@
+import chalk from "chalk";
 import TelegramBot, { Message } from "node-telegram-bot-api";
-import { z, ZodType } from "zod";
+import { z, ZodObject } from "zod";
 import { create } from "zustand";
 
-// Zod schemas
-const PromptSchema = z.object({
-  key: z.string(),
-  text: z.string(),
-  schema: z.instanceof(ZodType),
-});
+type Prompt = {
+  key: string;
+  text: string;
+};
 
-const CommandSchema = z.object({
-  name: z.string(),
-  description: z.string(),
-  prompts: z.array(PromptSchema),
-});
+type Command<T extends ZodObject<any>> = {
+  name: string;
+  description: string;
+  inputSchema: T;
+  prompts: Prompt[];
+};
 
-// Types
-type Prompt = z.infer<typeof PromptSchema>;
-type Command = z.infer<typeof CommandSchema>;
-
-// Zustand store
 interface BotState {
-  currentCommand: Command | null;
+  currentCommand: Command<any> | null;
   currentPromptIndex: number | null;
-  responses: Record<string, unknown>;
+  responses: Record<string, any>;
   isInPromptFlow: boolean;
-  setCommand: (command: Command) => void;
-  gotResponse: (key: string, value: unknown) => void;
+  setCommand: (command: Command<any>) => void;
+  gotResponse: (key: string, value: any) => void;
   nextPrompt: () => void;
   resetFlow: () => void;
 }
 
-const useBotStore = create<BotState>((set) => ({
-  currentCommand: null,
-  currentPromptIndex: null,
-  responses: {},
-  isInPromptFlow: false,
+const createBotStore = () =>
+  create<BotState>((set) => ({
+    currentCommand: null,
+    currentPromptIndex: null,
+    responses: {},
+    isInPromptFlow: false,
 
-  setCommand: (command) =>
-    set({
-      currentCommand: command,
-      currentPromptIndex: 0,
-      responses: {},
-      isInPromptFlow: true,
-    }),
+    setCommand: (command) =>
+      set({
+        currentCommand: command,
+        currentPromptIndex: 0,
+        responses: {},
+        isInPromptFlow: true,
+      }),
 
-  gotResponse: (key, value) =>
-    set((state) => ({
-      responses: { ...state.responses, [key]: value },
-    })),
+    gotResponse: (key, value) =>
+      set((state) => ({
+        responses: { ...state.responses, [key]: value },
+      })),
 
-  nextPrompt: () =>
-    set((state) => {
-      if (state.currentPromptIndex === null || !state.currentCommand)
-        return state;
-      const nextIndex = state.currentPromptIndex + 1;
-      return {
-        currentPromptIndex:
-          nextIndex < state.currentCommand.prompts.length ? nextIndex : null,
-        isInPromptFlow: nextIndex < state.currentCommand.prompts.length,
-      };
-    }),
+    nextPrompt: () =>
+      set((state) => {
+        if (state.currentPromptIndex === null || !state.currentCommand)
+          return state;
+        const nextIndex = state.currentPromptIndex + 1;
+        return {
+          currentPromptIndex:
+            nextIndex < state.currentCommand.prompts.length ? nextIndex : null,
+          isInPromptFlow: nextIndex < state.currentCommand.prompts.length,
+        };
+      }),
 
-  resetFlow: () =>
-    set({
-      currentCommand: null,
-      currentPromptIndex: null,
-      responses: {},
-      isInPromptFlow: false,
-    }),
-}));
+    resetFlow: () =>
+      set({
+        currentCommand: null,
+        currentPromptIndex: null,
+        responses: {},
+        isInPromptFlow: false,
+      }),
+  }));
 
 export default class Bot {
   private client: TelegramBot;
-  private commands: Map<string, Command> = new Map();
+  private commands: Map<string, Command<any>> = new Map();
+  private store: ReturnType<typeof createBotStore>;
 
   constructor(token: string) {
     this.client = new TelegramBot(token, { polling: true });
+    this.store = createBotStore();
     this.setupEventListeners();
   }
 
   private setupEventListeners(): void {
     this.client.on("message", this.handleMessage.bind(this));
     this.client.on("polling_error", (error) =>
-      console.error("Polling error:", error)
+      console.error(chalk.red("Polling error:"), error)
     );
-    this.client.on("error", (error) => console.error("Bot error:", error));
+    this.client.on("error", (error) =>
+      console.error(chalk.red("Bot error:"), error)
+    );
   }
 
-  public command(commandData: z.input<typeof CommandSchema>): void {
-    const command = CommandSchema.parse(commandData);
-    this.commands.set(command.name.toLowerCase(), command);
+  public schema<T extends ZodObject<any>>(inputSchema: T) {
+    return {
+      command: (commandData: Omit<Command<T>, "inputSchema">) => {
+        const command: Command<T> = {
+          ...commandData,
+          inputSchema,
+        };
+        this.commands.set(command.name.toLowerCase(), command);
+        return this;
+      },
+    };
   }
 
-  public async executeCommand(
+  public async executeCommand<T extends ZodObject<any>>(
     commandName: string,
     chatId: number
-  ): Promise<Record<string, unknown>> {
-    const command = this.commands.get(commandName.toLowerCase());
+  ): Promise<z.infer<T>> {
+    const command = this.commands.get(commandName.toLowerCase()) as
+      | Command<T>
+      | undefined;
     if (!command) {
       throw new Error(`Command "${commandName}" not found.`);
     }
 
-    const botStore = useBotStore.getState();
-    botStore.setCommand(command);
+    this.store.getState().setCommand(command);
 
     return new Promise((resolve, reject) => {
-      const unsubscribe = useBotStore.subscribe((state) => {
+      const unsubscribe = this.store.subscribe((state) => {
         if (!state.isInPromptFlow && state.currentCommand === command) {
           unsubscribe();
-          resolve(state.responses);
+          resolve(command.inputSchema.parse(state.responses));
         }
       });
 
@@ -121,7 +130,7 @@ export default class Bot {
     if (!message.text) return;
 
     const text = message.text.trim().toLowerCase();
-    const botStore = useBotStore.getState();
+    const botStore = this.store.getState();
 
     if (botStore.isInPromptFlow) {
       await this.handlePromptResponse(message);
@@ -146,7 +155,7 @@ export default class Bot {
   }
 
   private async handlePromptResponse(message: Message): Promise<void> {
-    const botStore = useBotStore.getState();
+    const botStore = this.store.getState();
     const { currentCommand, currentPromptIndex } = botStore;
 
     if (!currentCommand || currentPromptIndex === null || !message.text) return;
@@ -155,7 +164,10 @@ export default class Bot {
     if (!currentPrompt) return;
 
     try {
-      const validatedResponse = currentPrompt.schema.parse(message.text);
+      const schema = currentCommand.inputSchema.shape[
+        currentPrompt.key
+      ] as z.ZodType<any>;
+      const validatedResponse = schema.parse(message.text);
       botStore.gotResponse(currentPrompt.key, validatedResponse);
       botStore.nextPrompt();
 
@@ -167,7 +179,7 @@ export default class Bot {
           `Invalid input: ${error.errors[0]?.message}`
         );
       } else {
-        console.error("Unexpected error:", error);
+        console.error(chalk.red("Unexpected error:"), error);
         await this.client.sendMessage(
           message.chat.id,
           "An unexpected error occurred. Please try again."
@@ -177,7 +189,7 @@ export default class Bot {
   }
 
   private async sendNextPrompt(chatId: number): Promise<void> {
-    const botStore = useBotStore.getState();
+    const botStore = this.store.getState();
     const { currentCommand, currentPromptIndex } = botStore;
 
     if (!currentCommand || currentPromptIndex === null) {
@@ -196,12 +208,8 @@ export default class Bot {
   }
 
   private async finishPromptFlow(chatId: number): Promise<void> {
-    const botStore = useBotStore.getState();
-    console.log("Responses:", botStore.responses);
-    await this.client.sendMessage(
-      chatId,
-      "Thank you! You've completed the form."
-    );
+    const botStore = this.store.getState();
+    console.log(chalk.green("Responses:"), botStore.responses);
     botStore.resetFlow();
   }
 
