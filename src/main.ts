@@ -26,47 +26,50 @@ const specialOrderSchema = z.object({
 });
 
 bot.schema(customerInfoSchema).command({
+  isPublic: false,
   title: "Customer Info",
-  description: "Enter customer information",
+  description: "Provide customer information 📇",
   prompts: [
     {
       key: "name",
-      text: "What is the customer's name?",
-      help: "Enter the customer's full name (at least 2 characters).",
+      text: "👤 *Customer Name*: Please provide the full name of the customer (minimum 2 characters).",
+      help: "📝 Make sure to enter at least 2 characters for the customer's full name.",
     },
     {
       key: "email",
-      text: "What is the customer's email?",
-      help: "Enter a valid email address.",
+      text: "📧 *Customer Email*: Please provide a valid email address.",
+      help: "✉️ Ensure the email address is correct to avoid communication issues.",
     },
   ],
 });
 
 bot.schema(orderItemSchema).command({
+  isPublic: true,
   title: "Order Item",
-  description: "Enter an order item",
+  description: "Add an item to the order 📦",
   prompts: [
     {
       key: "productName",
-      text: "What is the product name?",
-      help: "Enter the name of the product (non-empty).",
+      text: "🛍️ *Product Name*: What is the name of the product you would like to order?",
+      help: "🔖 Please make sure the product name is not empty.",
     },
     {
       key: "quantity",
-      text: "How many units?",
-      help: "Enter a positive integer.",
+      text: "🔢 *Quantity*: How many units would you like to order?",
+      help: "➕ Please provide a positive integer representing the number of units.",
       parser: (input) => parseInt(input, 10),
     },
   ],
 });
 
 bot.schema(specialOrderSchema).command({
+  isPublic: true,
   title: "Special Order",
-  description: "Create a new special order",
+  description: "Create a special order 📝",
   prompts: [
     {
       key: "customerInfo",
-      text: "Let's start with customer information.",
+      text: "👤 *Customer Information*: Let's begin with the customer details.",
       parser: async () => {
         const result = await bot.exec("customer_info", TELEGRAM_CHAT_ID);
         return result;
@@ -74,8 +77,8 @@ bot.schema(specialOrderSchema).command({
     },
     {
       key: "items",
-      text: "Now, let's add items to the order. How many items?",
-      help: "Enter the number of items you want to add to the order.",
+      text: "📋 *Order Items*: How many items would you like to add to the order?",
+      help: "🛒 Enter the number of items to add. You will be prompted for details on each item.",
       parser: async (input: string) => {
         const count = parseInt(input, 10);
         const items = [];
@@ -88,29 +91,29 @@ bot.schema(specialOrderSchema).command({
     },
     {
       key: "status",
-      text: "What is the order status? (Pending/Processing/Completed)",
-      help: "Choose one of the following: Pending, Processing, or Completed.",
+      text: "📌 *Order Status*: What is the current status of the order? _(Pending, Processing, Completed)_",
+      help: "❗ Choose one of the following: *Pending*, *Processing*, or *Completed*.",
     },
     {
       key: "fulfillmentDate",
-      text: "What is the fulfillment date? (YYYY-MM-DD)",
-      help: "Enter the date in YYYY-MM-DD format. For example: 2023-05-15",
+      text: "📅 *Fulfillment Date*: When will the order be fulfilled? _(YYYY-MM-DD)_",
+      help: "🗓️ Please provide the fulfillment date in the format: `YYYY-MM-DD`. Example: *2023-05-15*.",
       parser: (input) => new Date(input),
     },
     {
       key: "notes",
-      text: "Any additional notes? (Type 'none' if no notes)",
-      help: "You can enter any additional information about the order here. If there are no notes, just type 'none'.",
+      text: "📝 *Additional Notes*: Any special instructions or notes? _(Type 'none' if there are no notes)_",
+      help: "💬 You can provide any extra information or leave it blank by typing 'none'.",
       parser: (input) => (input.toLowerCase() === "none" ? null : input),
     },
   ],
   execute: async (responses) => {
     console.log("Special order created:", responses);
-    // Here you can add logic to save the order to a database, etc.
+    // Add your logic here to save the order to a database, etc.
   },
 });
 
 bot
   .exec("special_order", TELEGRAM_CHAT_ID)
   .then((response) => console.log("Response:", response));
-console.log("Bot is running...");
+console.log("🚀 Bot is running...");

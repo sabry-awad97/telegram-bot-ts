@@ -10,7 +10,7 @@ type Prompt<T> = {
   parser?: (input: string) => any;
 };
 
-type Command<T extends ZodObject<any>> = {
+type BaseCommand<T extends ZodObject<any>> = {
   name: string;
   description: string;
   title: string;
@@ -19,6 +19,15 @@ type Command<T extends ZodObject<any>> = {
   subcommands?: Command<any>[];
   execute?: (responses: z.infer<T>) => Promise<void>;
 };
+
+type PublicCommand<T extends ZodObject<any>> = BaseCommand<T> & {
+  isPublic: true;
+};
+type PrivateCommand<T extends ZodObject<any>> = BaseCommand<T> & {
+  isPublic: false;
+};
+
+type Command<T extends ZodObject<any>> = PublicCommand<T> | PrivateCommand<T>;
 
 interface BotState {
   commandStack: Command<any>[];
@@ -106,10 +115,15 @@ export default class Bot {
 
   public schema<T extends ZodObject<any>>(inputSchema: T) {
     return {
-      command: (commandData: Omit<Command<T>, "inputSchema" | "name">) => {
+      command: <IsPublic extends boolean>(
+        commandData: Omit<BaseCommand<T>, "inputSchema" | "name"> & {
+          isPublic: IsPublic;
+        }
+      ) => {
         const command: Command<T> = {
           ...commandData,
           name: commandData.title.toLowerCase().replace(/\s+/g, "_"),
+          isPublic: commandData.isPublic as boolean,
           inputSchema,
         };
         this.commands.set(command.name, command);
@@ -127,6 +141,10 @@ export default class Bot {
     const command = this.commands.get(commandName) as Command<T> | undefined;
     if (!command) {
       throw new Error(`Command "${commandName}" not found.`);
+    }
+
+    if (!command.isPublic && !(await this.userHasPrivateAccess(chatId))) {
+      throw new Error("You don't have permission to execute this command.");
     }
 
     this.store.getState().pushCommand(command);
@@ -161,6 +179,13 @@ export default class Bot {
     });
   }
 
+  private async userHasPrivateAccess(chatId: number): Promise<boolean> {
+    // Implement your logic to check if the user has access to private commands
+    // This could involve checking against a list of authorized user IDs or roles
+    // For now, we'll return true as a placeholder
+    return true;
+  }
+
   private async handleMessage(message: Message): Promise<void> {
     if (!message.text) return;
 
@@ -178,13 +203,24 @@ export default class Bot {
     } else if (text.toLowerCase() === "/help") {
       await this.sendHelpMessage(message.chat.id);
     } else if (this.commands.has(text.toLowerCase())) {
-      try {
-        await this.exec(text.toLowerCase(), message.chat.id);
-      } catch (error) {
-        console.error(chalk.red("Error executing command:"), error);
+      const command = this.commands.get(text.toLowerCase());
+      if (
+        command &&
+        (command.isPublic || (await this.userHasPrivateAccess(message.chat.id)))
+      ) {
+        try {
+          await this.exec(text.toLowerCase(), message.chat.id);
+        } catch (error) {
+          console.error(chalk.red("Error executing command:"), error);
+          await this.client.sendMessage(
+            message.chat.id,
+            "An error occurred while executing the command. Please try again."
+          );
+        }
+      } else {
         await this.client.sendMessage(
           message.chat.id,
-          "An error occurred while executing the command. Please try again."
+          "You don't have permission to execute this command."
         );
       }
     } else {
@@ -232,7 +268,9 @@ export default class Bot {
   private async sendHelpMessage(chatId: number): Promise<void> {
     let helpMessage = "*Available Commands:*\n\n";
     for (const [, command] of this.commands) {
-      helpMessage += `*/${command.name}* - ${command.description}\n`;
+      if (command.isPublic || (await this.userHasPrivateAccess(chatId))) {
+        helpMessage += `*/${command.name}* - ${command.description}\n`;
+      }
     }
     helpMessage += "\nDuring a command:\n";
     helpMessage += "• Type /help for prompt-specific help\n";
