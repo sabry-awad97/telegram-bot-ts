@@ -1,6 +1,8 @@
-import "dotenv/config";
 import { z } from "zod";
 import Bot from "./bot";
+import { loadEnv } from "./util";
+
+loadEnv();
 
 const TELEGRAM_BOT_TOKEN = z.string().parse(process.env.TELEGRAM_BOT_TOKEN);
 const TELEGRAM_CHAT_ID = z.coerce.number().parse(process.env.TELEGRAM_CHAT_ID);
@@ -8,8 +10,8 @@ const TELEGRAM_CHAT_ID = z.coerce.number().parse(process.env.TELEGRAM_CHAT_ID);
 const bot = new Bot(TELEGRAM_BOT_TOKEN);
 
 const customerInfoSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
+  name: z.string(),
+  email: z.string(),
 });
 
 const orderItemSchema = z.object({
@@ -57,7 +59,6 @@ bot.schema(orderItemSchema).command({
       key: "quantity",
       text: "🔢 *Quantity*: How many units would you like to order?",
       help: "➕ Please provide a positive integer representing the number of units.",
-      parser: (input) => parseInt(input, 10),
     },
   ],
 });
@@ -70,24 +71,11 @@ bot.schema(specialOrderSchema).command({
     {
       key: "customerInfo",
       text: "👤 *Customer Information*: Let's begin with the customer details.",
-      parser: async () => {
-        const result = await bot.exec("customer_info", TELEGRAM_CHAT_ID);
-        return result;
-      },
     },
     {
       key: "items",
       text: "📋 *Order Items*: How many items would you like to add to the order?",
       help: "🛒 Enter the number of items to add. You will be prompted for details on each item.",
-      parser: async (input: string) => {
-        const count = parseInt(input, 10);
-        const items = [];
-        for (let i = 0; i < count; i++) {
-          const item = await bot.exec("order_item", TELEGRAM_CHAT_ID);
-          items.push(item);
-        }
-        return items;
-      },
     },
     {
       key: "status",
@@ -98,13 +86,11 @@ bot.schema(specialOrderSchema).command({
       key: "fulfillmentDate",
       text: "📅 *Fulfillment Date*: When will the order be fulfilled? _(YYYY-MM-DD)_",
       help: "🗓️ Please provide the fulfillment date in the format: `YYYY-MM-DD`. Example: *2023-05-15*.",
-      parser: (input) => new Date(input),
     },
     {
       key: "notes",
       text: "📝 *Additional Notes*: Any special instructions or notes? _(Type 'none' if there are no notes)_",
       help: "💬 You can provide any extra information or leave it blank by typing 'none'.",
-      parser: (input) => (input.toLowerCase() === "none" ? null : input),
     },
   ],
   execute: async (responses) => {

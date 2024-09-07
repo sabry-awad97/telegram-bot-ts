@@ -2,32 +2,23 @@ import chalk from "chalk";
 import TelegramBot, { Message } from "node-telegram-bot-api";
 import { z, ZodObject } from "zod";
 import { create } from "zustand";
+import logger from "./logger";
 
 type Prompt<T> = {
   key: keyof T;
   text: string;
   help?: string;
-  parser?: (input: string) => any;
 };
 
-type BaseCommand<T extends ZodObject<any>> = {
+type Command<T extends ZodObject<any>> = {
   name: string;
+  isPublic: boolean;
   description: string;
   title: string;
   inputSchema: T;
   prompts: Prompt<z.infer<T>>[];
-  subcommands?: Command<any>[];
   execute?: (responses: z.infer<T>) => Promise<void>;
 };
-
-type PublicCommand<T extends ZodObject<any>> = BaseCommand<T> & {
-  isPublic: true;
-};
-type PrivateCommand<T extends ZodObject<any>> = BaseCommand<T> & {
-  isPublic: false;
-};
-
-type Command<T extends ZodObject<any>> = PublicCommand<T> | PrivateCommand<T>;
 
 interface BotState {
   commandStack: Command<any>[];
@@ -116,14 +107,13 @@ export default class Bot {
   public schema<T extends ZodObject<any>>(inputSchema: T) {
     return {
       command: <IsPublic extends boolean>(
-        commandData: Omit<BaseCommand<T>, "inputSchema" | "name"> & {
+        commandData: Omit<Command<T>, "inputSchema" | "name"> & {
           isPublic: IsPublic;
         }
       ) => {
         const command: Command<T> = {
           ...commandData,
           name: commandData.title.toLowerCase().replace(/\s+/g, "_"),
-          isPublic: commandData.isPublic as boolean,
           inputSchema,
         };
         this.commands.set(command.name, command);
@@ -140,12 +130,19 @@ export default class Bot {
   ): Promise<z.infer<T>> {
     const command = this.commands.get(commandName) as Command<T> | undefined;
     if (!command) {
-      throw new Error(`Command "${commandName}" not found.`);
+      const errorMessage = `Command "${commandName}" not found.`;
+      logger.error(errorMessage);
+      throw new Error(errorMessage);
     }
 
     if (!command.isPublic && !(await this.userHasPrivateAccess(chatId))) {
-      throw new Error("You don't have permission to execute this command.");
+      const permissionError =
+        "You don't have permission to execute this command.";
+      logger.warn(permissionError, { chatId, commandName });
+      throw new Error(permissionError);
     }
+
+    logger.info(`Executing command: ${commandName}`, { chatId });
 
     this.store.getState().pushCommand(command);
 
@@ -166,8 +163,18 @@ export default class Bot {
           if (command.execute) {
             command
               .execute(responses)
-              .then(() => resolve(responses))
-              .catch(reject);
+              .then(() => {
+                logger.info(`Command executed successfully: ${commandName}`, {
+                  responses,
+                });
+                resolve(responses);
+              })
+              .catch((err) => {
+                logger.error(`Error executing command: ${commandName}`, {
+                  err,
+                });
+                reject(err);
+              });
           } else {
             resolve(responses);
           }
@@ -175,7 +182,10 @@ export default class Bot {
         }
       });
 
-      this.sendNextPrompt(chatId).catch(reject);
+      this.sendNextPrompt(chatId).catch((err) => {
+        logger.error("Error sending next prompt", { err });
+        reject(err);
+      });
     });
   }
 
@@ -187,44 +197,52 @@ export default class Bot {
   }
 
   private async handleMessage(message: Message): Promise<void> {
-    if (!message.text) return;
+    const { chat, text } = message;
+    if (!text) return;
 
-    const text = message.text.trim();
+    const cleanedText = text.trim().toLowerCase();
     const botStore = this.store.getState();
 
+    logger.info("Received message", { chatId: chat.id, message: text });
+
+    logger.info("Current commands", this.commands.keys());
+
     if (botStore.isInPromptFlow) {
-      if (text.toLowerCase() === "/help") {
-        await this.sendHelpForCurrentPrompt(message.chat.id);
-      } else if (text.toLowerCase() === "/stop") {
-        await this.stopCurrentCommand(message.chat.id);
+      if (cleanedText === "/help") {
+        await this.sendHelpForCurrentPrompt(chat.id);
+      } else if (cleanedText === "/stop") {
+        await this.stopCurrentCommand(chat.id);
       } else {
         await this.handlePromptResponse(message);
       }
-    } else if (text.toLowerCase() === "/help") {
-      await this.sendHelpMessage(message.chat.id);
-    } else if (this.commands.has(text.toLowerCase())) {
-      const command = this.commands.get(text.toLowerCase());
+    } else if (cleanedText === "/help") {
+      await this.sendHelpMessage(chat.id);
+    } else if (this.commands.has(cleanedText)) {
+      const command = this.commands.get(cleanedText);
       if (
         command &&
-        (command.isPublic || (await this.userHasPrivateAccess(message.chat.id)))
+        (command.isPublic || (await this.userHasPrivateAccess(chat.id)))
       ) {
         try {
-          await this.exec(text.toLowerCase(), message.chat.id);
+          await this.exec(cleanedText, chat.id);
         } catch (error) {
-          console.error(chalk.red("Error executing command:"), error);
+          logger.error("Error executing command", { error });
           await this.client.sendMessage(
-            message.chat.id,
+            chat.id,
             "An error occurred while executing the command. Please try again."
           );
         }
       } else {
         await this.client.sendMessage(
-          message.chat.id,
+          chat.id,
           "You don't have permission to execute this command."
         );
       }
     } else {
-      await this.sendUnrecognizedCommandMessage(message.chat.id);
+      await this.client.sendMessage(
+        chat.id,
+        "Unrecognized command. Please use /help to see available commands."
+      );
     }
   }
 
@@ -254,6 +272,10 @@ export default class Bot {
 
     const currentPrompt = currentCommand.prompts[currentPromptIndex];
     if (currentPrompt && currentPrompt.help) {
+      logger.debug("Sending help for current prompt", {
+        chatId,
+        help: currentPrompt.help,
+      });
       await this.client.sendMessage(chatId, currentPrompt.help, {
         parse_mode: "Markdown",
       });
@@ -293,12 +315,10 @@ export default class Bot {
     if (!currentPrompt) return;
 
     try {
-      const parser = currentPrompt.parser || ((input: string) => input);
-      const parsedValue = parser(message.text);
       const schema = currentCommand.inputSchema.shape[
         currentPrompt.key as string
       ] as z.ZodType<any>;
-      const validatedResponse = schema.parse(parsedValue);
+      const validatedResponse = schema.parse(message.text);
       botStore.gotResponse(currentPrompt.key as string, validatedResponse);
       botStore.nextPrompt();
 
@@ -344,12 +364,5 @@ export default class Bot {
     const botStore = this.store.getState();
     console.log(chalk.green("Responses:"), botStore.responses);
     botStore.resetFlow();
-  }
-
-  private async sendUnrecognizedCommandMessage(chatId: number): Promise<void> {
-    await this.client.sendMessage(
-      chatId,
-      "Unrecognized command. Please use /help to see available commands."
-    );
   }
 }
