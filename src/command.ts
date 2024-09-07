@@ -17,6 +17,10 @@ export class Command {
     return this.config.description;
   }
 
+  get isPrivate(): boolean {
+    return this.config.isPrivate;
+  }
+
   async execute(bot: TelegramBot, msg: TelegramBot.Message): Promise<void> {
     const chatId = msg.chat.id;
     const answers: Answers = {};

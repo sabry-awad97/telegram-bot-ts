@@ -13,14 +13,24 @@ export class PromptHandler {
     await bot.sendMessage(chatId, this.prompt.message, keyboard);
 
     return new Promise((resolve) => {
-      bot.once("message", async (msg) => {
+      const messageHandler = async (msg: TelegramBot.Message) => {
         if (msg.chat.id !== chatId) return;
+
+        if (msg.text?.toLowerCase() === "help" && this.prompt.help) {
+          await bot.sendMessage(chatId, this.prompt.help);
+          return;
+        }
+
         let answer = this.parseAnswer(msg);
 
         if (this.prompt.validate) {
           const isValid = await this.prompt.validate(answer, currentAnswers);
           if (!isValid) {
-            answer = await this.ask(bot, chatId, currentAnswers);
+            await bot.sendMessage(
+              chatId,
+              "Invalid input. Please try again or type 'help' for assistance."
+            );
+            return;
           }
         }
 
@@ -31,8 +41,28 @@ export class PromptHandler {
           )) as AnswerValue;
         }
 
-        resolve(answer);
-      });
+        if (this.prompt.type === "checkbox") {
+          currentAnswers[this.prompt.name] = (
+            (currentAnswers[this.prompt.name] as string[]) || []
+          ).concat(answer as string[]);
+          await bot.sendMessage(
+            chatId,
+            `Added: ${(answer as string[]).join(
+              ", "
+            )}. Select more or type 'done' to finish.`
+          );
+          if (msg.text?.toLowerCase() !== "done") return;
+        }
+
+        bot.removeListener("message", messageHandler);
+        resolve(
+          this.prompt.type === "checkbox"
+            ? currentAnswers[this.prompt.name]!
+            : answer
+        );
+      };
+
+      bot.on("message", messageHandler);
     });
   }
 
@@ -40,8 +70,9 @@ export class PromptHandler {
     if ("choices" in this.prompt) {
       return {
         reply_markup: {
-          keyboard: this.prompt.choices.map((choice) => [{ text: choice }]),
-          one_time_keyboard: true,
+          keyboard: this.prompt.choices
+            .map((choice) => [{ text: choice }])
+            .concat([[{ text: "done" }]]),
           resize_keyboard: true,
         },
       };
@@ -65,7 +96,7 @@ export class PromptHandler {
       case "confirm":
         return text.toLowerCase() === "yes";
       case "checkbox":
-        return text.split(",").map((item) => item.trim());
+        return [text];
       default:
         return text;
     }
