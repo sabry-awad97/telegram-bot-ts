@@ -1,35 +1,49 @@
 import TelegramBot, { Message } from "node-telegram-bot-api";
+import { z, ZodType } from "zod";
 import { create } from "zustand";
 
-// Types and Interfaces
-type ValidatorFunction = (input: string) => {
-  valid: boolean;
-  message?: string;
-};
+// Zod schemas
+const PromptSchema = z.object({
+  key: z.string(),
+  text: z.string(),
+  schema: z.instanceof(ZodType),
+});
 
-interface Prompt {
-  key: string;
-  text: string;
-  validate?: ValidatorFunction;
-}
+const CommandSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  prompts: z.array(PromptSchema),
+});
 
-interface BotState {
-  prompts: Prompt[];
-  currentPromptIndex: number | null;
-  responses: Record<string, string>;
-  isInPromptFlow: boolean;
-  gotResponse: (key: string, value: string) => void;
-  nextPrompt: () => void;
-  setPrompts: (prompts: Prompt[]) => void;
-  setIsInPromptFlow: (inPromptFlow: boolean) => void;
-}
+// Types
+type Prompt = z.infer<typeof PromptSchema>;
+type Command = z.infer<typeof CommandSchema>;
 
 // Zustand store
+interface BotState {
+  currentCommand: Command | null;
+  currentPromptIndex: number | null;
+  responses: Record<string, unknown>;
+  isInPromptFlow: boolean;
+  setCommand: (command: Command) => void;
+  gotResponse: (key: string, value: unknown) => void;
+  nextPrompt: () => void;
+  resetFlow: () => void;
+}
+
 const useBotStore = create<BotState>((set) => ({
-  prompts: [],
+  currentCommand: null,
   currentPromptIndex: null,
   responses: {},
   isInPromptFlow: false,
+
+  setCommand: (command) =>
+    set({
+      currentCommand: command,
+      currentPromptIndex: 0,
+      responses: {},
+      isInPromptFlow: true,
+    }),
 
   gotResponse: (key, value) =>
     set((state) => ({
@@ -38,34 +52,31 @@ const useBotStore = create<BotState>((set) => ({
 
   nextPrompt: () =>
     set((state) => {
-      if (state.currentPromptIndex === null) return state;
+      if (state.currentPromptIndex === null || !state.currentCommand)
+        return state;
       const nextIndex = state.currentPromptIndex + 1;
       return {
-        currentPromptIndex: nextIndex < state.prompts.length ? nextIndex : null,
-        isInPromptFlow: nextIndex < state.prompts.length,
+        currentPromptIndex:
+          nextIndex < state.currentCommand.prompts.length ? nextIndex : null,
+        isInPromptFlow: nextIndex < state.currentCommand.prompts.length,
       };
     }),
 
-  setPrompts: (prompts) =>
+  resetFlow: () =>
     set({
-      prompts,
-      currentPromptIndex: 0,
+      currentCommand: null,
+      currentPromptIndex: null,
       responses: {},
-      isInPromptFlow: true,
+      isInPromptFlow: false,
     }),
-
-  setIsInPromptFlow: (isInPromptFlow) => set({ isInPromptFlow }),
 }));
 
-// Bot class
 export default class Bot {
   private client: TelegramBot;
-  private commands: Map<string, Prompt[]> = new Map();
-  private isResponding: boolean = false;
+  private commands: Map<string, Command> = new Map();
 
   constructor(token: string) {
     this.client = new TelegramBot(token, { polling: true });
-    this.command("/help", []);
     this.setupEventListeners();
   }
 
@@ -77,8 +88,33 @@ export default class Bot {
     this.client.on("error", (error) => console.error("Bot error:", error));
   }
 
-  public command(commandName: string, prompts: Prompt[]): void {
-    this.commands.set(commandName.toLowerCase(), prompts);
+  public command(commandData: z.input<typeof CommandSchema>): void {
+    const command = CommandSchema.parse(commandData);
+    this.commands.set(command.name.toLowerCase(), command);
+  }
+
+  public async executeCommand(
+    commandName: string,
+    chatId: number
+  ): Promise<Record<string, unknown>> {
+    const command = this.commands.get(commandName.toLowerCase());
+    if (!command) {
+      throw new Error(`Command "${commandName}" not found.`);
+    }
+
+    const botStore = useBotStore.getState();
+    botStore.setCommand(command);
+
+    return new Promise((resolve, reject) => {
+      const unsubscribe = useBotStore.subscribe((state) => {
+        if (!state.isInPromptFlow && state.currentCommand === command) {
+          unsubscribe();
+          resolve(state.responses);
+        }
+      });
+
+      this.sendNextPrompt(chatId).catch(reject);
+    });
   }
 
   private async handleMessage(message: Message): Promise<void> {
@@ -88,131 +124,90 @@ export default class Bot {
     const botStore = useBotStore.getState();
 
     if (botStore.isInPromptFlow) {
-      await this.handlePromptFlow(message);
+      await this.handlePromptResponse(message);
     } else if (text === "/help") {
-      await this.sendHelpMessage(message);
+      await this.sendHelpMessage(message.chat.id);
     } else if (this.commands.has(text)) {
-      await this.startPromptFlow(message, text);
+      await this.executeCommand(text, message.chat.id);
     } else {
-      await this.sendUnrecognizedCommandMessage(message);
+      await this.sendUnrecognizedCommandMessage(message.chat.id);
     }
   }
 
-  private async sendHelpMessage(message: Message): Promise<void> {
+  private async sendHelpMessage(chatId: number): Promise<void> {
     let helpMessage = "*Available Commands:*\n\n";
-    for (const [command, prompts] of this.commands) {
-      helpMessage += `*${command}*:\n`;
-      if (prompts.length > 0) {
-        prompts.forEach((prompt, index) => {
-          helpMessage += `  ${index + 1}. ${prompt.text}\n`;
-        });
-      } else {
-        helpMessage += `  _No prompts associated with this command._\n`;
-      }
-      helpMessage += "\n";
+    for (const [, command] of this.commands) {
+      helpMessage += `*/${command.name}* - ${command.description}\n`;
     }
 
-    await this.client.sendMessage(message.chat.id, helpMessage, {
+    await this.client.sendMessage(chatId, helpMessage, {
       parse_mode: "Markdown",
     });
   }
 
-  private async startPromptFlow(
-    message: Message,
-    command: string
-  ): Promise<void> {
-    const prompts = this.commands.get(command);
-    if (!prompts) return;
-
+  private async handlePromptResponse(message: Message): Promise<void> {
     const botStore = useBotStore.getState();
-    botStore.setPrompts(prompts);
+    const { currentCommand, currentPromptIndex } = botStore;
 
-    if (prompts.length > 0) {
-      await this.client.sendMessage(message.chat.id, prompts[0]!.text, {
-        parse_mode: "Markdown",
-      });
-    }
-  }
+    if (!currentCommand || currentPromptIndex === null || !message.text) return;
 
-  private async handlePromptFlow(message: Message): Promise<void> {
-    if (this.isResponding) return;
-    this.isResponding = true;
+    const currentPrompt = currentCommand.prompts[currentPromptIndex];
+    if (!currentPrompt) return;
 
     try {
-      const botStore = useBotStore.getState();
-      const { currentPromptIndex, prompts } = botStore;
-
-      if (currentPromptIndex === null) {
-        await this.finishPromptFlow(message);
-        return;
-      }
-
-      const currentPrompt = prompts[currentPromptIndex];
-      if (!currentPrompt || !message.text) return;
-
-      const isValid = await this.validateResponse(
-        currentPrompt,
-        message.text,
-        message.chat.id
-      );
-      if (!isValid) return;
-
-      botStore.gotResponse(currentPrompt.key, message.text);
+      const validatedResponse = currentPrompt.schema.parse(message.text);
+      botStore.gotResponse(currentPrompt.key, validatedResponse);
       botStore.nextPrompt();
 
-      await this.sendNextPromptOrFinish(message);
-    } finally {
-      this.isResponding = false;
+      await this.sendNextPrompt(message.chat.id);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        await this.client.sendMessage(
+          message.chat.id,
+          `Invalid input: ${error.errors[0]?.message}`
+        );
+      } else {
+        console.error("Unexpected error:", error);
+        await this.client.sendMessage(
+          message.chat.id,
+          "An unexpected error occurred. Please try again."
+        );
+      }
     }
   }
 
-  private async validateResponse(
-    prompt: Prompt,
-    input: string,
-    chatId: number
-  ): Promise<boolean> {
-    if (!prompt.validate) return true;
-
-    const validation = prompt.validate(input);
-    if (!validation.valid) {
-      await this.client.sendMessage(
-        chatId,
-        validation.message || "Invalid input. Please try again."
-      );
-      return false;
-    }
-    return true;
-  }
-
-  private async sendNextPromptOrFinish(message: Message): Promise<void> {
+  private async sendNextPrompt(chatId: number): Promise<void> {
     const botStore = useBotStore.getState();
-    const { currentPromptIndex, prompts } = botStore;
+    const { currentCommand, currentPromptIndex } = botStore;
 
-    if (currentPromptIndex !== null && currentPromptIndex < prompts.length) {
-      const nextPrompt = prompts[currentPromptIndex]!;
-      await this.client.sendMessage(message.chat.id, nextPrompt.text, {
+    if (!currentCommand || currentPromptIndex === null) {
+      await this.finishPromptFlow(chatId);
+      return;
+    }
+
+    const nextPrompt = currentCommand.prompts[currentPromptIndex];
+    if (nextPrompt) {
+      await this.client.sendMessage(chatId, nextPrompt.text, {
         parse_mode: "Markdown",
       });
     } else {
-      await this.finishPromptFlow(message);
+      await this.finishPromptFlow(chatId);
     }
   }
 
-  private async finishPromptFlow(message: Message): Promise<void> {
+  private async finishPromptFlow(chatId: number): Promise<void> {
     const botStore = useBotStore.getState();
     console.log("Responses:", botStore.responses);
     await this.client.sendMessage(
-      message.chat.id,
+      chatId,
       "Thank you! You've completed the form."
     );
-    botStore.setIsInPromptFlow(false);
+    botStore.resetFlow();
   }
 
-  private async sendUnrecognizedCommandMessage(
-    message: Message
-  ): Promise<void> {
+  private async sendUnrecognizedCommandMessage(chatId: number): Promise<void> {
     await this.client.sendMessage(
-      message.chat.id,
+      chatId,
       "Unrecognized command. Please use /help to see available commands."
     );
   }
