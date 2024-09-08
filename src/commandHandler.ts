@@ -1,8 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { z } from "zod";
 import { Command } from "./command";
-import { BotModule } from "./module";
-import { Module } from "./types";
+import { BotModule, Module } from "./module";
 
 export class CommandHandler {
   private modules: Map<string, BotModule> = new Map();

@@ -1,5 +1,19 @@
-import { Command } from "./command";
-import { Module } from "./types";
+import TelegramBot from "node-telegram-bot-api";
+import { z } from "zod";
+import { Command, CommandConfigSchema } from "./command";
+import { Answers } from "./types";
+
+export type CommandHandler = (
+  bot: TelegramBot,
+  msg: TelegramBot.Message,
+  answers: Answers
+) => Promise<void>;
+
+export const ModuleSchema = z.object({
+  name: z.string(),
+  commands: z.array(CommandConfigSchema),
+});
+export type Module = z.infer<typeof ModuleSchema>;
 
 export class BotModule {
   private commands: Map<string, Command> = new Map();

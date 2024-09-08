@@ -1,6 +1,16 @@
 import TelegramBot from "node-telegram-bot-api";
-import { PromptHandler } from "./prompt";
-import { Answers, CommandConfig } from "./types";
+import { z } from "zod";
+import { PromptHandler, PromptSchema } from "./prompt";
+import { Answers } from "./types";
+
+export const CommandConfigSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  isPrivate: z.boolean().default(false),
+  prompts: z.array(PromptSchema),
+});
+
+type CommandConfig = z.infer<typeof CommandConfigSchema>;
 
 export class Command {
   private prompts: PromptHandler[];
