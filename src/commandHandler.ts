@@ -125,38 +125,39 @@ export class CommandHandler {
       prompts: [],
       handler: async ({ bot, chatId, meta }) => {
         const userId = meta.user?.id;
-        const categorizedCommands = Array.from(this.commands.values())
-          .filter((cmd) => !cmd.isPrivate || this.isUserAuthorized(userId))
-          .reduce<Record<string, string[]>>((acc, cmd) => {
-            if (!acc[cmd.category]) {
-              acc[cmd.category] = [];
+        const isAuthorizedUser = this.isUserAuthorized(userId);
+  
+        const categories: { [key: string]: Command[] } = {};
+  
+        // Group commands by category, filtering private commands for unauthorized users
+        this.commands.forEach((command) => {
+          if (!command.isPrivate || isAuthorizedUser) {
+            if (!categories[command.category]) {
+              categories[command.category] = [];
             }
-            acc[cmd.category]?.push(`/${cmd.name} - ${cmd.description}`);
-            return acc;
-          }, {});
-
-        const commandList = Object.entries(categorizedCommands)
-          .map(
-            ([category, commands]) => `*${category}*\n${commands.join("\n")}`
-          )
-          .join("\n\n");
-
-        if (commandList) {
-          await bot.sendMessage(
-            chatId,
-            `Available commands:\n\n${commandList}`,
-          );
-        } else {
-          await bot.sendMessage(
-            chatId,
-            "You are not authorized to view any commands."
-          );
+            categories[command.category]?.push(command);
+          }
+        });
+  
+        // Generate help message with Markdown
+        let helpMessage = "*Available Commands:*\n\n";
+  
+        for (const [category, commands] of Object.entries(categories)) {
+          helpMessage += `*${category}*\n`;
+          commands.forEach((command) => {
+            helpMessage += `- /${command.name.replace(/[_\-\.]/g, '\\$&')}: ${command.description.replace(/[_\-\.]/g, '\\$&')}\n`;
+          });
+          helpMessage += '\n';
         }
+  
+        // Send help message
+        await bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
       },
     };
-
+  
     this.addCommand(helpCommand);
   }
+  
 
   private isUserAuthorized(userId?: number): boolean {
     const authorizedUsers = [123456789, 987654321];

@@ -206,6 +206,7 @@ export class PromptHandler {
               keyboard: [[{ text: "Yes" }], [{ text: "No" }]],
               one_time_keyboard: true, // Automatically removes the keyboard after one use
               resize_keyboard: true,
+              force_reply: true, // Force user to reply with "Yes" or "No"
             },
           };
 

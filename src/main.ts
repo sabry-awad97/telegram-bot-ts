@@ -15,7 +15,7 @@ const commandHandler = new CommandHandler(bot);
 commandHandler.addCommand({
   name: "create_product",
   description: "Create a new product",
-  isPrivate: false,
+  isPrivate: true,
   category: "Inventory",
   prompts: [
     {
