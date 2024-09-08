@@ -7,7 +7,7 @@ const logFormat = printf(({ level, message, timestamp, ...meta }) => {
   const metaString = Object.keys(meta).length
     ? JSON.stringify(meta, null, 2)
     : "";
-  return `[${timestamp}] ${level}: ${message} ${metaString}`;
+  return `[${timestamp}] ${level.toUpperCase()}: ${message} ${metaString}`;
 });
 
 const logger = createLogger({

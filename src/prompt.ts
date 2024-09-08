@@ -1,14 +1,21 @@
 import TelegramBot from "node-telegram-bot-api";
+import logger from "./logger";
 import { AnswerValue, Answers, Prompt } from "./types";
 
 export class PromptHandler {
   constructor(public prompt: Prompt) {}
 
+  // Method to ask the user a question and handle their response
   async ask(
     bot: TelegramBot,
     chatId: number,
     currentAnswers: Answers
   ): Promise<AnswerValue> {
+    // Log the prompt being sent
+    logger.info(
+      `Prompting user ${chatId} with message: ${this.prompt.message}`
+    );
+
     const keyboard = this.createKeyboard();
     await bot.sendMessage(chatId, this.prompt.message, keyboard);
 
@@ -16,58 +23,65 @@ export class PromptHandler {
       const messageHandler = async (msg: TelegramBot.Message) => {
         if (msg.chat.id !== chatId) return;
 
-        if (msg.text?.toLowerCase() === "help" && this.prompt.help) {
+        const userInput = msg.text?.toLowerCase();
+        logger.info(`Received input from user ${chatId}: ${userInput}`);
+
+        if (userInput === "help" && this.prompt.help) {
+          logger.info(`User ${chatId} requested help`);
           await bot.sendMessage(chatId, this.prompt.help);
           return;
         }
 
-        let answer = this.parseAnswer(msg);
+        if (this.prompt.type === "list" && userInput === "done") {
+          logger.info(`User ${chatId} finished list selection`);
 
-        if (this.prompt.validate) {
-          const isValid = await this.prompt.validate(answer, currentAnswers);
-          if (!isValid) {
-            await bot.sendMessage(
-              chatId,
-              "Invalid input. Please try again or type 'help' for assistance."
-            );
-            return;
-          }
+          bot.removeListener("message", messageHandler);
+          await bot.sendMessage(chatId, "Selection complete.", {
+            reply_markup: { remove_keyboard: true },
+          });
+
+          logger.info(
+            `Final answers for user ${chatId}: ${JSON.stringify(
+              currentAnswers[this.prompt.name]
+            )}`
+          );
+          resolve(currentAnswers[this.prompt.name]!);
+          return;
         }
 
-        if (this.prompt.transform) {
-          answer = (await this.prompt.transform(
-            answer,
-            currentAnswers
-          )) as AnswerValue;
-        }
+        const answer = this.parseAnswer(msg);
+        logger.info(`Parsed answer from user ${chatId}: ${answer}`);
 
-        if (this.prompt.type === "checkbox") {
+        if (this.prompt.type === "list") {
           currentAnswers[this.prompt.name] = (
             (currentAnswers[this.prompt.name] as string[]) || []
           ).concat(answer as string[]);
+
+          logger.info(`User ${chatId} selected list option: ${answer}`);
+
           await bot.sendMessage(
             chatId,
-            `Added: ${(answer as string[]).join(
-              ", "
-            )}. Select more or type 'done' to finish.`
+            `Added: ${answer}. Select more or type 'done' to finish.`
           );
-          if (msg.text?.toLowerCase() !== "done") return;
+        } else {
+          bot.removeListener("message", messageHandler);
+          logger.info(`Answer for user ${chatId} resolved: ${answer}`);
+          resolve(answer);
         }
-
-        bot.removeListener("message", messageHandler);
-        resolve(
-          this.prompt.type === "checkbox"
-            ? currentAnswers[this.prompt.name]!
-            : answer
-        );
       };
 
       bot.on("message", messageHandler);
     });
   }
 
+  // Create the custom keyboard for the prompt
   private createKeyboard(): TelegramBot.SendMessageOptions {
     if ("choices" in this.prompt) {
+      logger.info(
+        `Creating keyboard with choices for prompt: ${this.prompt.choices.join(
+          ", "
+        )}`
+      );
       return {
         reply_markup: {
           keyboard: this.prompt.choices
@@ -77,6 +91,7 @@ export class PromptHandler {
         },
       };
     } else if (this.prompt.type === "confirm") {
+      logger.info(`Creating Yes/No keyboard for confirm prompt`);
       return {
         reply_markup: {
           keyboard: [[{ text: "Yes" }], [{ text: "No" }]],
@@ -88,17 +103,18 @@ export class PromptHandler {
     return {};
   }
 
+  // Parse the user's message based on the expected type of the answer
   private parseAnswer(msg: TelegramBot.Message): AnswerValue {
     const text = msg.text || "";
     switch (this.prompt.type) {
       case "number":
-        return parseFloat(text);
+        return parseFloat(text); // Parse number inputs
       case "confirm":
-        return text.toLowerCase() === "yes";
-      case "checkbox":
-        return [text];
+        return text.toLowerCase() === "yes"; // Convert "Yes"/"No" into a boolean
+      case "list":
+        return [text]; // Return an array for list answers
       default:
-        return text;
+        return text; // For other types, return the text as is
     }
   }
 }

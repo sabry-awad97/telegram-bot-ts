@@ -1,6 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import { z } from "zod";
 import { CommandHandler } from "./commandHandler";
+import { Module } from "./types";
 import { loadEnv } from "./util";
 
 loadEnv();
@@ -9,7 +10,6 @@ const TELEGRAM_BOT_TOKEN = z.string().parse(process.env.TELEGRAM_BOT_TOKEN);
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
 const commandHandler = new CommandHandler(bot);
-
 const surveyModule: Module = {
   name: "Survey",
   commands: [
@@ -29,16 +29,9 @@ const surveyModule: Module = {
           name: "age",
           message: "How old are you?",
           help: "Enter a number between 0 and 120.",
-          validate: (value) => {
-            const age = Number(value);
-            return (
-              (age >= 0 && age <= 120) ||
-              "Please enter a valid age between 0 and 120."
-            );
-          },
         },
         {
-          type: "list",
+          type: "checkbox",
           name: "color",
           message: "What is your favorite color?",
           choices: ["Red", "Blue", "Green", "Yellow"],
@@ -51,7 +44,7 @@ const surveyModule: Module = {
           help: "Answer 'Yes' or 'No'.",
         },
         {
-          type: "checkbox",
+          type: "list",
           name: "hobbies",
           message: "Select your hobbies:",
           choices: ["Reading", "Gaming", "Sports", "Cooking", "Traveling"],

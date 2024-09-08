@@ -15,8 +15,6 @@ export const BasePromptSchema = z.object({
   name: z.string(),
   message: z.string(),
   help: z.string().optional(),
-  validate: z.function().optional(),
-  transform: z.function().optional(),
 });
 
 export const ChoicePromptSchema = BasePromptSchema.extend({
